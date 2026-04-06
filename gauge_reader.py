@@ -1,9 +1,13 @@
 from collections import Counter
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
+
+
+# 回调签名统一为：读数 + 调试字典，方便 ROS 发布节点直接复用。
+GaugeOutputCallback = Callable[[Optional[int], Dict[str, object]], None]
 
 
 def _imread_unicode(path: str) -> Optional[np.ndarray]:
@@ -250,6 +254,42 @@ def read_gauge(image: np.ndarray) -> Optional[int]:
     """读取单张半圆形指针表盘。"""
     value, _ = _analyze_gauge(image)
     return value
+
+
+def process_gauge_image(
+    image: np.ndarray,
+    output_callback: Optional[GaugeOutputCallback] = None,
+) -> Optional[int]:
+    """对外的单图处理接口，适合 ROS 订阅回调直接调用。"""
+    # 这里保留原始分析结果，调用方可以把 value 或 debug 结果继续发布出去。
+    value, debug = _analyze_gauge(image)
+    if output_callback is not None:
+        output_callback(value, debug)
+    return value
+
+
+def process_gauge_image_debug(
+    image: np.ndarray,
+    output_callback: Optional[GaugeOutputCallback] = None,
+) -> Tuple[Optional[int], Optional[np.ndarray]]:
+    """对外的调试接口，返回读数和可视化图，也支持结果回调。"""
+    # 调试模式下既返回可视化图，也把结果交给外部，便于 ROS 节点串联。
+    value, vis = read_gauge_debug(image)
+    if output_callback is not None:
+        debug: Dict[str, object] = {"debug_vis": vis}
+        output_callback(value, debug)
+    return value, vis
+
+
+def publish_gauge_result(
+    value: Optional[int],
+    output_callback: Optional[GaugeOutputCallback] = None,
+    debug: Optional[Dict[str, object]] = None,
+) -> None:
+    """对外的结果输出接口，ROS 里可以在这里接发布器或消息队列。"""
+    # 如果外部已经有发布器，这里只负责把读数和调试信息转交出去。
+    if output_callback is not None:
+        output_callback(value, debug or {})
 
 
 def read_gauge_debug(image: np.ndarray) -> Tuple[Optional[int], Optional[np.ndarray]]:
