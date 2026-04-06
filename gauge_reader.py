@@ -7,7 +7,6 @@ import numpy as np
 
 
 def _imread_unicode(path: str) -> Optional[np.ndarray]:
-    """Read image robustly for Unicode paths on Windows."""
     try:
         data = np.fromfile(path, dtype=np.uint8)
         if data.size == 0:
@@ -18,10 +17,11 @@ def _imread_unicode(path: str) -> Optional[np.ndarray]:
 
 
 def _auto_crop_black_frame(image: np.ndarray) -> Tuple[np.ndarray, Optional[Tuple[int, int, int, int]]]:
-    """Auto-crop the dark rectangular gauge frame when present."""
+    """在存在外部黑色矩形边框时，自动裁到表盘区域。"""
     h, w = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
+    # 把外侧深色边框当作前景，先把表盘主体裁出来。
     _, bin_dark = cv2.threshold(gray, 90, 255, cv2.THRESH_BINARY_INV)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     bin_dark = cv2.morphologyEx(bin_dark, cv2.MORPH_CLOSE, kernel, iterations=2)
@@ -63,10 +63,11 @@ def _auto_crop_black_frame(image: np.ndarray) -> Tuple[np.ndarray, Optional[Tupl
 
 
 def _estimate_center(shape: Tuple[int, int], edge_image: np.ndarray) -> Tuple[int, int]:
-    """Estimate center from lower horizontal baseline, fallback to bottom midpoint."""
+    """根据下方水平基线估计圆心，失败时回退到底部中点。"""
     h, w = shape
     fallback = (w // 2, h)
 
+    # 表盘下边缘通常是最明显、最长的水平线。
     lines = cv2.HoughLinesP(
         edge_image,
         rho=1,
@@ -108,7 +109,7 @@ def _estimate_center(shape: Tuple[int, int], edge_image: np.ndarray) -> Tuple[in
 
 
 def _analyze_gauge(image: np.ndarray) -> Tuple[Optional[int], dict]:
-    """Run full analysis and return value plus debug intermediates."""
+    """执行完整分析，并返回读数和中间调试结果。"""
     debug = {
         "work_image": None,
         "crop_rect": None,
@@ -149,6 +150,7 @@ def _analyze_gauge(image: np.ndarray) -> Tuple[Optional[int], dict]:
     debug["mask"] = mask
     debug["edges_roi"] = edges_roi
 
+    # 忽略底部干扰，只保留上半部分的线段。
     lines = cv2.HoughLinesP(
         edges_roi,
         rho=1,
@@ -179,7 +181,7 @@ def _analyze_gauge(image: np.ndarray) -> Tuple[Optional[int], dict]:
 
 
 def _build_upper_semi_mask(shape: Tuple[int, int], center: Tuple[int, int]) -> np.ndarray:
-    """Build an upper-semicircle mask to suppress lower-edge interference."""
+    """构建上半圆掩膜，用来压制底边干扰。"""
     h, w = shape
     cx, cy = center
 
@@ -199,11 +201,12 @@ def _line_pointer_tip(
     min_len: float,
     center_tol: float,
 ) -> Optional[Tuple[int, int]]:
-    """Select the most likely pointer line and return its tip coordinate."""
+    """从候选线段里选出最像指针的那一条，并返回尖端坐标。"""
     cx, cy = center
     best_len = -1.0
     best_tip = None
 
+    # 合格的指针线段应当足够长，并且有一端靠近估计圆心。
     for line in lines:
         x1, y1, x2, y2 = line[0]
         p1 = np.array([x1, y1], dtype=np.float32)
@@ -229,7 +232,7 @@ def _line_pointer_tip(
 
 
 def _tip_to_value(tip: Tuple[int, int], center: Tuple[int, int]) -> int:
-    """Map pointer angle to gauge value in range 0-50."""
+    """把指针角度映射为 0 到 50 的读数。"""
     cx, cy = center
     tx, ty = tip
 
@@ -244,13 +247,13 @@ def _tip_to_value(tip: Tuple[int, int], center: Tuple[int, int]) -> int:
 
 
 def read_gauge(image: np.ndarray) -> Optional[int]:
-    """Read a single semicircular pointer gauge."""
+    """读取单张半圆形指针表盘。"""
     value, _ = _analyze_gauge(image)
     return value
 
 
 def read_gauge_debug(image: np.ndarray) -> Tuple[Optional[int], Optional[np.ndarray]]:
-    """Read gauge and return a debug visualization image."""
+    """读取表盘，并返回调试可视化图。"""
     if image is None or image.size == 0:
         return None, None
 
@@ -265,6 +268,7 @@ def read_gauge_debug(image: np.ndarray) -> Tuple[Optional[int], Optional[np.ndar
 
     mask = debug.get("mask")
     if mask is not None:
+        # 用绿色标出当前搜索区域，方便排查失败原因。
         overlay = np.zeros_like(vis)
         overlay[:, :, 1] = mask
         vis = cv2.addWeighted(vis, 1.0, overlay, 0.15, 0)
@@ -289,7 +293,7 @@ def read_gauge_debug(image: np.ndarray) -> Tuple[Optional[int], Optional[np.ndar
 
 
 def read_gauge_stable(image_list: Sequence[np.ndarray]) -> Optional[int]:
-    """Read multiple frames and return mode value for stability."""
+    """读取多帧结果，取众数以提高稳定性。"""
     if not image_list:
         return None
 
@@ -370,6 +374,7 @@ if __name__ == "__main__":
             Path(output_path).write_text(f"{value}\n", encoding="utf-8")
             print(f"[INFO] Result written to: {output_path}")
     else:
+        # 多帧时取众数，减少偶发误判。
         stable_value = read_gauge_stable(images)
         print(stable_value)
 
